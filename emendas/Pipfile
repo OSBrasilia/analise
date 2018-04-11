@@ -1,0 +1,15 @@
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[requires]
+python_version = "3.5"
+
+[packages]
+elasticsearch = ">=6.2,<7"
+pandas = "==0.22.0"
+espandas = "==1.0.2"
+ujson = "*"
+
+[dev-packages]
