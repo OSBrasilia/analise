@@ -1,0 +1,14 @@
+[[source]]
+verify_ssl = true
+name = "pypi"
+url = "https://pypi.python.org/simple"
+
+[packages]
+"beautifulsoup4" = "*"
+textract = "*"
+elasticsearch = "<7.0.0,>=6.0.0"
+
+[requires]
+python_version = "3.5"
+
+[dev-packages]
