@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
-from elasticsearch import Elasticsearch
+from bisect import bisect_right, bisect_left
+import pandas as pd
 from pathlib import Path
+import csv
 import re
 import sys
 import textract
-import json
-import csv
-from bisect import bisect_right, bisect_left
 
 class Record(object):
     """This class represents a record extracted from the PDF storing the order of the day."""
@@ -78,11 +77,6 @@ class Record(object):
     def _items(self, entry):
         return entry.items()
 
-    def _write_json(self, json_path):
-        with json_path.open('w') as out:
-            out.write(json.dumps(self.doc, indent=2))
-        print('Wrote %s' % (json_path))
-
     def _write_md(self, processed_path):
         with processed_path.open('w') as out:
             for (field, content) in self.doc.items():
@@ -104,7 +98,6 @@ class Record(object):
 
 
     def write(self, file_path):
-        self._write_json(file_path.with_suffix('.json'))
         self._write_md(file_path.with_suffix('.processed.md'))
 
 
@@ -114,6 +107,8 @@ class VerbaRecord(Record):
 
     month_pattern = re.compile(r'(' + '|'.join(months) + r')', re.IGNORECASE)
     date_pattern = re.compile(r'^\s*(' + '|'.join(months) + r').* de (\d\d\d\d)\s*$', re.IGNORECASE)
+
+    pending_pattern = re.compile(r'\s*(\w+( \w+)*)\s*\*')
 
     columns = ['Deputado (a)', 'Imóvel', 'Máquina e equipamento', 'Veìculo', 'Combustível e lubrificante',
             'Assesoria ou consultoria', 'Divulgação de atividade parlamentar', 'Outros', 'Total']
@@ -162,6 +157,9 @@ class VerbaRecord(Record):
             elif col_start + 1 < col_end:
                 # more than one column?
                 print('Attention: word %d spans columns %d-%d: "%s" in "%s"' % (i_word, col_start, col_end, w, raw_line))
+                if line_length < 30:
+                    # This line only has the author's name and nothing else.
+                    col_end = 1
             elif col_start == col_end and col_end == 0:
                 # word ends before first midpoint.
                 print('Attention: word %d ends before col %d midpoint: "%s" in "%s"' % (i_word, col_start, w, raw_line))
@@ -190,6 +188,12 @@ class VerbaRecord(Record):
                 continue
             print('\t>> Row: %s' % row)
             section = { VerbaRecord.columns[col['col_end'] - 1]: col['word'] for col in row}
+            m = VerbaRecord.pending_pattern.match(section[VerbaRecord.columns[0]])
+            if m is not None:
+                section['pendente'] = True
+                section[VerbaRecord.columns[0]] = m.group(1)
+            else:
+                section['pendente'] = False
             print('\t>> Section: %s' % section)
             self._put_section(field, section)
         self._lines.clear()
@@ -198,8 +202,15 @@ class VerbaRecord(Record):
         header_lines = []
         while True:
             self._take(lines.readline())
-            if (self._word_starts and self._word_starts[0] == 0) or self._last.endswith(',00'):
-                break
+            if len(self._last) > 0:
+                if self._last[0].isalpha() and self._last[-1].isdigit():
+                    # Found our first row record, stop reading headers.
+                    print('\t>>records started: %s' % self._last)
+                    break
+                elif self._word_starts and self._word_starts[0] == 0 and not self._last.startswith(VerbaRecord.columns[0].upper()):
+                    # Found our first row record, stop reading headers.
+                    print('\t>>not a header: %s' % self._last)
+                    break
             elif self._last.strip().casefold().startswith('atual'):
                 self.doc['updted'] = self._last
                 self._lines.clear()
@@ -234,25 +245,30 @@ class VerbaRecord(Record):
         self._lines.clear()
         self._read_headers(lines)
         last = True
-        while last and not self._raw_line.startswith('('):
+        while last and not (self._raw_line.startswith('(') or self._raw_line.startswith('*')):
             last = self._read_row(self._raw_line)
             self._raw_line = lines.readline()
         self._flush_table('rows')
-        print('\t>> Finished file: %s: year=%d, month=%d, date=%s' % (self._file_path, self.doc['year'], self.doc['month'], self.doc['date']))
 
+
+    def _write_df(self, file_path):
+        df = pd.DataFrame(data=self.doc['rows'], columns = VerbaRecord.columns + ['pendente'])
+        for key in ('date', 'month', 'year'):
+            df[key] = self.doc[key]
+        df.to_csv(file_path.with_suffix('.df.csv'), sep=';')
 
     def write(self, file_path):
         Record.write(self, file_path)
-        self._write_csv(file_path.with_suffix('.csv'))
+        self._write_df(file_path.with_suffix('.csv'))
 
     def _write_csv(self, file_path):
         with file_path.open('w') as out:
             writer = csv.writer(out, delimiter=';')
             writer.writerow(VerbaRecord.columns)
             for doc in self.doc['rows']:
-                row = [doc.get(col, '') for col in VerbaRecord.columns]
+                row = [doc.get(col, '0,00') for col in VerbaRecord.columns]
                 writer.writerow(row)
-        print('Wrote %s' % (file_path))
+        print('\t>> Wrote file: %s' % (file_path))
 
 
 def extract_text(pdf_path, **args):
@@ -280,20 +296,16 @@ if __name__ == '__main__':
     file_path = Path(sys.argv[2]) if len(sys.argv) >= 2 else None
     if cmd == 'setup':
         setup_index()
-    elif cmd == 'order':
-        text_path = sys.argv[2]
-        record = OrderRecord()
-        record.read(text_path)
-        record.write(text_path.with_suffix('.json'))
     elif cmd == 'verba':
         if file_path is None or not file_path.exists():
             raise Exception('You must specify a valid file (got: %r)' % file_path)
         elif file_path.suffix == '.pdf':
             file_path = extract_text(file_path, layout=True)
+        print('\t>> Reading file: %s' % file_path)
         with file_path.open('r') as txt:
             record = VerbaRecord(file_path)
             record.read(txt)
-            record.write(file_path.with_suffix('.json'))
+            record.write(file_path.with_name('%s.csv' % record.doc['date']))
 
     else:
         pdf_path = Path(sys.argv[1])

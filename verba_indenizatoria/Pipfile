@@ -7,6 +7,9 @@ url = "https://pypi.python.org/simple"
 "beautifulsoup4" = "*"
 textract = "*"
 elasticsearch = "<7.0.0,>=6.0.0"
+pandas = "==0.22.0"
+espandas = "==1.0.1"
+ujson = "*"
 
 [requires]
 python_version = "3.5"
